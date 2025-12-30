@@ -140,7 +140,22 @@ def get_detail(project_name):
         'crack_data': crack_data,
         'alarms': alarms
     })
-
+@app.route('/clear_database', methods=['POST'])
+def clear_database():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM alarms")
+        cursor.execute("DELETE FROM crack_data")
+        cursor.execute("DELETE FROM projects")
+        conn.commit()
+        return jsonify({'message': '云端数据库已清空'}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
 if __name__ == '__main__':
 
     app.run()
+
