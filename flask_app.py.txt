@@ -1,0 +1,145 @@
+from flask import Flask, request, jsonify
+import sqlite3
+import json
+from datetime import datetime
+
+app = Flask(__name__)
+
+# 数据库文件名（Render 会自动识别当前目录）
+DB_PATH = 'crack_projects.db'
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+@app.route('/')
+def index():
+    return "欢迎使用裂缝监测云端服务！系统运行正常！"
+
+@app.route('/upload', methods=['POST'])
+def upload_overview():
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+        INSERT OR REPLACE INTO projects 
+        (name, description, filename, created_by, created_at, data_count, stats_json, alarm_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data.get('name'),
+            data.get('description', ''),
+            data.get('filename', ''),
+            data.get('created_by'),
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            data.get('data_count', 0),
+            json.dumps(data.get('stats', {})),
+            data.get('alarm_count', 0)
+        ))
+        conn.commit()
+        return jsonify({'message': '概览上传成功'}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/upload_detail', methods=['POST'])
+def upload_detail():
+    payload = request.get_json()
+    if not payload or 'project_name' not in payload:
+        return jsonify({'error': '缺少 project_name'}), 400
+
+    project_name = payload['project_name']
+    crack_data = payload.get('crack_data', [])
+    alarms = payload.get('alarms', [])
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id FROM projects WHERE name = ?", (project_name,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': '项目不存在'}), 404
+        project_id = row['id']
+
+        cursor.execute("DELETE FROM crack_data WHERE project_id = ?", (project_id,))
+        cursor.execute("DELETE FROM alarms WHERE project_id = ?", (project_id,))
+
+        for item in crack_data:
+            item.pop('id', None)
+            item['project_id'] = project_id
+            cols = ', '.join(item.keys())
+            placeholders = ', '.join(['?' for _ in item])
+            values = tuple(item.values())
+            cursor.execute(f"INSERT INTO crack_data ({cols}) VALUES ({placeholders})", values)
+
+        for item in alarms:
+            item.pop('id', None)
+            item['project_id'] = project_id
+            cols = ', '.join(item.keys())
+            placeholders = ', '.join(['?' for _ in item])
+            values = tuple(item.values())
+            cursor.execute(f"INSERT INTO alarms ({cols}) VALUES ({placeholders})", values)
+
+        conn.commit()
+        return jsonify({'message': '详细数据上传成功'}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/projects', methods=['GET'])
+def get_projects():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, description, filename, created_by, created_at, data_count, stats_json, alarm_count FROM projects")
+    rows = cursor.fetchall()
+    projects = []
+    for row in rows:
+        projects.append({
+            'name': row['name'],
+            'description': row['description'],
+            'filename': row['filename'],
+            'created_by': row['created_by'],
+            'created_at': row['created_at'],
+            'data_count': row['data_count'],
+            'stats': json.loads(row['stats_json']) if row['stats_json'] else {},
+            'alarm_count': row['alarm_count']
+        })
+    conn.close()
+    return jsonify(projects)
+
+@app.route('/get_detail/<project_name>')
+def get_detail(project_name):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id FROM projects WHERE name = ?", (project_name,))
+    project_row = cursor.fetchone()
+    if not project_row:
+        return jsonify({'crack_data': [], 'alarms': []})
+
+    project_id = project_row['id']
+
+    cursor.execute("SELECT * FROM crack_data WHERE project_id = ?", (project_id,))
+    crack_columns = [desc[0] for desc in cursor.description]
+    crack_data = [dict(zip(crack_columns, r)) for r in cursor.fetchall()]
+
+    cursor.execute("SELECT * FROM alarms WHERE project_id = ?", (project_id,))
+    alarm_columns = [desc[0] for desc in cursor.description]
+    alarms = [dict(zip(alarm_columns, r)) for r in cursor.fetchall()]
+
+    conn.close()
+    return jsonify({
+        'crack_data': crack_data,
+        'alarms': alarms
+    })
+
+if __name__ == '__main__':
+    app.run()
